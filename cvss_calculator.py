@@ -26,7 +26,7 @@ class CVSSCalculatorGUI:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("CVSS Calculator")
-        self.root.geometry("600x400")
+        self.root.geometry("800x600")
         self.setup_gui()
 
     def setup_gui(self):
@@ -36,16 +36,25 @@ class CVSSCalculatorGUI:
 
         tk.Label(frame, text="CVSS Score Calculator", font=('Arial', 14, 'bold')).pack(pady=10)
         
-        tk.Button(frame, text="Select Excel File", command=self.select_file).pack(pady=20)
+        # Add description
+        description = """
+        1. Click 'Select Excel File' to choose your threat analysis file
+        2. The tool will automatically process threats and calculate CVSS scores
+        3. Results will be saved in a new Excel file
+        """
+        tk.Label(frame, text=description, justify=tk.LEFT, wraplength=700).pack(pady=10)
         
-        # Status display
-        self.status_var = tk.StringVar()
-        self.status_var.set("Please select an Excel file to begin...")
-        tk.Label(frame, textvariable=self.status_var, wraplength=500).pack(pady=10)
-
+        tk.Button(frame, text="Select Excel File", command=self.select_file, 
+                 bg='#4CAF50', fg='white', padx=20, pady=10).pack(pady=20)
+        
+        # Status display with scrolled text
+        self.status_text = tk.Text(frame, height=15, width=80)
+        self.status_text.pack(pady=10)
+        self.status_text.insert(tk.END, "Please select an Excel file to begin...\n")
+        
         # Progress display
         self.progress_var = tk.StringVar()
-        tk.Label(frame, textvariable=self.progress_var).pack(pady=10)
+        tk.Label(frame, textvariable=self.progress_var, wraplength=700).pack(pady=10)
 
     def select_file(self):
         file_path = filedialog.askopenfilename(
@@ -53,7 +62,7 @@ class CVSSCalculatorGUI:
             title="Select Excel file containing threat descriptions"
         )
         if file_path:
-            self.status_var.set(f"Processing file: {file_path}")
+            self.update_status(f"Selected file: {file_path}")
             self.root.update()
             try:
                 calculator = AutomatedCVSSCalculator(file_path, self)
@@ -61,7 +70,12 @@ class CVSSCalculatorGUI:
                 messagebox.showinfo("Success", "Processing complete! Check the output file and logs for details.")
             except Exception as e:
                 messagebox.showerror("Error", f"An error occurred: {str(e)}")
-            self.status_var.set("Ready for next file...")
+            self.update_status("Ready for next file...")
+
+    def update_status(self, message):
+        self.status_text.insert(tk.END, f"{message}\n")
+        self.status_text.see(tk.END)
+        self.root.update()
 
     def update_progress(self, message):
         self.progress_var.set(message)
@@ -157,7 +171,7 @@ class AutomatedCVSSCalculator:
     def log_progress(self, message):
         logging.info(message)
         if self.gui:
-            self.gui.update_progress(message)
+            self.gui.update_status(message)
 
     def analyze_threat_description(self, threat_desc):
         """Analyze threat description using NLP to determine appropriate CVSS metrics"""
@@ -230,19 +244,33 @@ class AutomatedCVSSCalculator:
             self.wb = openpyxl.load_workbook(self.input_file)
             self.sheet = self.wb.active
 
+            # Get headers and print them for debugging
+            headers = [str(cell.value).strip() if cell.value else "" for cell in self.sheet[1]]
+            self.log_progress(f"Found columns in Excel: {headers}")
+
+            # Look for any column that might contain threats
+            threat_desc_col = None
+            possible_column_names = ['threat description', 'threat', 'description', 'threats', 
+                                   'vulnerability', 'risk description', 'risk', 'finding', 
+                                   'threat scenario', 'scenario description']
+
+            # Print each header and its index for debugging
+            for idx, header in enumerate(headers, 1):
+                self.log_progress(f"Column {idx}: '{header}'")
+                header_lower = header.lower()
+                if any(name in header_lower for name in possible_column_names):
+                    threat_desc_col = idx
+                    self.log_progress(f"Using column: '{header}' for threat descriptions")
+                    break
+
+            if not threat_desc_col:
+                raise ValueError(f"Could not identify threat column. Available columns are: {headers}")
+
             # Create output filename with timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_dir = os.path.dirname(self.input_file)
             base_name = os.path.basename(self.input_file)
             self.output_file = os.path.join(output_dir, f"cvss_scored_{timestamp}_{base_name}")
-
-            # Find header row and column indices
-            headers = [cell.value for cell in self.sheet[1]]
-            threat_desc_col = next((i + 1 for i, h in enumerate(headers) 
-                                  if h and 'threat' in h.lower() and 'description' in h.lower()), None)
-            
-            if not threat_desc_col:
-                raise ValueError("Required column 'Threat Description' not found")
 
             # Add new columns for results
             vector_col = len(headers) + 1
@@ -267,6 +295,7 @@ class AutomatedCVSSCalculator:
                     continue
 
                 self.log_progress(f"Processing row {row-1}/{total_rows}")
+                self.log_progress(f"Processing threat: {threat_desc[:100]}...")  # Show first 100 chars
 
                 # Generate CVSS vector from threat description
                 vector = self.analyze_threat_description(threat_desc)
@@ -283,6 +312,7 @@ class AutomatedCVSSCalculator:
                         self.sheet.cell(row=row, column=score_col, value=result['score'])
                         self.sheet.cell(row=row, column=severity_col, value=result['severity'])
                         successful += 1
+                        self.log_progress(f"Generated CVSS Score: {result['score']} ({result['severity']})")
                 else:
                     self.sheet.cell(row=row, column=error_col, value="Could not generate CVSS vector")
                     failed += 1
